@@ -14,8 +14,8 @@
  *
  */
 
-String appVersion()  { return "3.3.1.0" }
-String appModified() { return "2019-12-17" }
+String appVersion()  { return "3.3.2.0" }
+String appModified() { return "2020-01-07" }
 String appAuthor()   { return "Anthony S." }
 Boolean isBeta()     { return false }
 Boolean isST()       { return (getPlatform() == "SmartThings") }
@@ -111,7 +111,7 @@ private buildTriggerEnum() {
         //TODO: Once I can find a reliable method to list the scenes and subscribe to events on Hubitat I will re-activate
         // buildItems?.Location?.scene = "Scenes"
     }
-    buildItems["Sensor Devices"] = ["contact":"Contacts | Doors | Windows", "battery":"Battery Level", "motion":"Motion", "illuminance": "Illuminance/Lux", "presence":"Presence", "temperature":"Temperature", "humidity":"Humidity", "water":"Water", "power":"Power", "acceleration":"Accelorometers"]?.sort{ it?.value }
+    buildItems["Sensor Devices"] = ["contact":"Contacts | Doors | Windows", "battery":"Battery Level", "motion":"Motion", "illuminance": "Illuminance/Lux", "presence":"Presence", "temperature":"Temperature", "humidity":"Humidity", "water":"Water", "power":"Power", "acceleration":"Accelerometers"]?.sort{ it?.value }
     buildItems["Actionable Devices"] = ["lock":"Locks", "button":"Buttons", "switch":"Switches/Outlets", "level":"Dimmers/Level", "door":"Garage Door Openers", "valve":"Valves", "shade":"Window Shades", "thermostat":"Thermostat"]?.sort{ it?.value }
     if(!isST()) {
         buildItems["Actionable Devices"]?.remove("button")
@@ -404,7 +404,7 @@ def triggersPage() {
             }
 
             if (valTrigEvt("acceleration")) {
-                trigNonNumSect("acceleration", "accelerationSensor", "Accelorometers", "Accelorometers", ["active", "inactive", "any"], "changes to", ["active", "inactive"], "acceleration", trigItemCnt++)
+                trigNonNumSect("acceleration", "accelerationSensor", "Accelerometers", "Accelerometers", ["active", "inactive", "any"], "changes to", ["active", "inactive"], "acceleration", trigItemCnt++)
             }
 
             if (valTrigEvt("door")) {
@@ -675,7 +675,7 @@ def conditionsPage() {
         if(multiConds) {
             section() {
                 input "cond_require_all", "bool", title: inTS("Require All Selected Conditions to Pass Before Activating Zone?", getAppImg("checkbox", true)), required: false, defaultValue: true, submitOnChange: true, image: getAppImg("checkbox")
-                paragraph pTS("Notice:\n${settings?.cond_require_all != false ? "All selected conditions must pass before this zone will be marked active." : "Any condition will make this zone active."}", null, false, "#2784D9"), state: "complete"
+                paragraph pTS("Notice:\n${(settings?.cond_require_all == true) ? "All selected conditions must pass before this zone will be marked active." : "Any condition will make this zone active."}", null, false, "#2784D9"), state: "complete"
             }
         }
         section(sTS("Time/Date")) {
@@ -701,7 +701,7 @@ def conditionsPage() {
 
         condNonNumSect("contact", "contactSensor", "Door, Window, Contact Sensors Conditions", "Contact Sensors", ["open","closed"], "are", "contact")
 
-        condNonNumSect("acceleration", "accelerationSensor", "Accelorometer Conditions", "Accelorometer Sensors", ["active","inactive"], "are", "acceleration")
+        condNonNumSect("acceleration", "accelerationSensor", "Accelerometer Conditions", "Accelerometer Sensors", ["active","inactive"], "are", "acceleration")
 
         condNonNumSect("lock", "lock", "Lock Conditions", "Smart Locks", ["locked", "unlocked"], "are", "lock")
 
@@ -2581,6 +2581,8 @@ private clearAfterCheckSchedule() {
 /***********************************************************************************************************
    CONDITIONS HANDLER
 ************************************************************************************************************/
+Boolean reqAllCond() { return (multipleConditions() && settings?.cond_require_all == true)}
+
 Boolean timeCondOk() {
     def startTime = null
     def stopTime = null
@@ -2594,29 +2596,30 @@ Boolean timeCondOk() {
         if(settings?.cond_time_stop_type == "sunset") { stopTime = sun?.sunset }
         else if(settings?.cond_time_stop_type == "sunrise") { stopTime = sun?.sunrise }
         else if(settings?.cond_time_stop_type == "time" && settings?.cond_time_stop) { stopTime = settings?.cond_time_stop }
-    } else { return true }
+    } else { return null }
     if(startTime && stopTime) {
         if(!isST()) {
             startTime = toDateTime(startTime)
             stopTime = toDateTime(stopTime)
         }
         return timeOfDayIsBetween(startTime, stopTime, new Date(), location?.timeZone)
-    } else { return true }
+    } else { return null }
 }
 
 Boolean dateCondOk() {
+    if(settings?.cond_days == null && settings?.cond_months == null) return null
     Boolean dOk = settings?.cond_days ? (isDayOfWeek(settings?.cond_days)) : true
     Boolean mOk = settings?.cond_months ? (isMonthOfYear(settings?.cond_months)) : true
     logDebug("dateConditions | monthOk: $mOk | daysOk: $dOk")
-    return (dOk && mOk)
+    return reqAllCond() ? (mOk && dOk) : (mOk || dOk)
 }
 
 Boolean locationCondOk() {
-    Boolean reqAll = (settings?.cond_require_all != false)
+    if(settings?.cond_mode == null && settings?.cond_mode_cmd == null && settings?.cond_alarm == null) return null
     Boolean mOk = (settings?.cond_mode && settings?.cond_mode_cmd) ? (isInMode(settings?.cond_mode, (settings?.cond_mode_cmd == "not"))) : true
-    Boolean aOk = settings?.cond_alarm ? (isInAlarmMode(settings?.cond_alarm)) : true
+    Boolean aOk = settings?.cond_alarm ? isInAlarmMode(settings?.cond_alarm) : true
     logDebug("locationConditions | modeOk: $mOk | alarmOk: $aOk")
-    return reqAll ? (mOk && aOk) : (mOk || aOk)
+    return reqAllCond() ? (mOk && aOk) : (mOk || aOk)
 }
 
 Boolean checkDeviceCondOk(type) {
@@ -2669,39 +2672,38 @@ Boolean checkDeviceNumCondOk(type) {
 }
 
 Boolean deviceCondOk() {
-    Boolean swDevOk = checkDeviceCondOk("switch")
-    Boolean motDevOk = checkDeviceCondOk("motion")
-    Boolean presDevOk = checkDeviceCondOk("presence")
-    Boolean conDevOk = checkDeviceCondOk("contact")
-    Boolean accDevOk = checkDeviceCondOk("acceleration")
-    Boolean lockDevOk = checkDeviceCondOk("lock")
-    Boolean garDevOk = checkDeviceCondOk("door")
-    Boolean shadeDevOk = checkDeviceCondOk("shade")
-    Boolean valveDevOk = checkDeviceCondOk("valve")
-    Boolean tempDevOk = checkDeviceNumCondOk("temperature")
-    Boolean humDevOk = checkDeviceNumCondOk("humidity")
-    Boolean illDevOk = checkDeviceNumCondOk("illuminance")
-    Boolean levelDevOk = checkDeviceNumCondOk("level")
-    Boolean powerDevOk = checkDeviceNumCondOk("illuminance")
-    Boolean battDevOk = checkDeviceNumCondOk("battery")
-    logDebug("deviceCondOk | switchOk: $swDevOk | motionOk: $motDevOk | presenceOk: $presDevOk | contactOk: $conDevOk || accelerationOk: $accDevOk | lockOk: $lockDevOk | garageOk: $garDevOk")
-    if(settings?.cond_require_all == false) {
-        return (swDevOk || motDevOk || presDevOk || conDevOk || accDevOk || lockDevOk || garDevOk || valveDevOk || shadeDevOk || tempDevOk || humDevOk || battDevOk || illDevOk || levelDevOk || powerDevOk)
-    } else {
-        return (swDevOk && motDevOk && presDevOk && conDevOk && accDevOk && lockDevOk && garDevOk && valveDevOk && shadeDevOk && tempDevOk && humDevOk && battDevOk && illDevOk && levelDevOk && powerDevOk)
+    List skipped = []
+    List passed = []
+    List failed = []
+    ["switch", "motion", "presence", "contact", "acceleration", "lock", "door", "shade", "valve"]?.each { i->
+        if(!settings?."cond_${i}") { skipped?.push(i); return; }
+        checkDeviceCondOk(i) ? passed?.push(i) : failed?.push(i);
     }
+    ["temperature", "humidity", "illuminance", "level", "power", "battery"]?.each { i->
+        if(!settings?."cond_${i}") { skipped?.push(i); return; }
+        checkDeviceNumCondOk(i) ? passed?.push(i) : failed?.push(i);
+    }
+    logDebug("DeviceCondOk | Found: (${(passed?.size() + failed?.size())}) | Skipped: $skipped | Passed: $passed | Failed: $failed")
+    Integer cndSize = (passed?.size() + failed?.size())
+    if(cndSize == 0) return null
+    return reqAllCond() ? (cndSize == passed?.size()) : (cndSize > 0 && passed?.size() >= 1)
 }
 
 def conditionStatus() {
-    Boolean reqAll = (settings?.cond_require_all != false)
-    List blocks = []
-    List ok = []
-    if(!timeCondOk())        { blocks?.push("time") } else { ok?.push("time") }
-    if(!dateCondOk())        { blocks?.push("date") } else { ok?.push("date") }
-    if(!locationCondOk())    { blocks?.push("location") } else { ok?.push("location") }
-    if(!deviceCondOk())      { blocks?.push("device") } else { ok?.push("device") }
-    logDebug("ConditionsStatus | RequireAll: ${reqAll} | Blocks: ${blocks}")
-    return [ok: (!reqAll ? (ok?.size() >= 1) : (blocks?.size() == 0)), blocks: blocks]
+    Boolean reqAll = reqAllCond()
+    List failed = []
+    List passed = []
+    List skipped = []
+    ["time", "date", "location", "device"]?.each { i->
+        def s = "${i}CondOk"()
+        if(s == null) { skipped?.push(i); return; }
+        s ? passed?.push(i) : failed?.push(i);
+    }
+    Integer cndSize = (passed?.size() + failed?.size())
+    logDebug("ConditionsStatus | RequireAll: ${reqAll} | Found: (${cndSize}) | Skipped: $skipped | Passed: $passed | Failed: $failed")
+    Boolean ok = reqAll ? (cndSize == passed?.size()) : (cndSize > 0 && passed?.size() >= 1)
+    if(cndSize == 0) ok = true;
+    return [ok: ok, passed: passed, blocks: failed]
 }
 
 Boolean devCondConfigured(type) {
@@ -2835,8 +2837,9 @@ String decodeVariables(evt, str) {
         }
         str = (str?.contains("%unit%") && evt?.name) ? str?.replaceAll("%unit%", getAttrPostfix(evt?.name)) : str
         str = (str?.contains("%value%") && evt?.value) ? str?.replaceAll("%value%", evt?.value?.toString()?.isNumber() ? evtValueCleanup(evt?.value) : evt?.value) : str
-        str = (str?.contains("%duration%") && evt?.totalDur) ? str?.replaceAll("%duration%", "${evt?.totalDur} seconds ago") : str
-        str = (str?.contains("%duration_min%") && evt?.totalDur) ? str?.replaceAll("%duration_min%", "${durationToMinutes(evt?.totalDur?.toDouble())} seconds ago") : str
+        str = (str?.contains("%duration%") && evt?.totalDur) ? str?.replaceAll("%duration%", "${evt?.totalDur} second${evt?.totalDur > 1 ? "s" : ""} ago") : str
+        str = (str?.contains("%duration_min%") && evt?.totalDur) ? str?.replaceAll("%duration_min%", "${durationToMinutes(evt?.totalDur)} minute${durationToMinutes(evt?.totalDur) > 1 ? "s" : ""} ago") : str
+        str = (str?.contains("%durationmin%") && evt?.totalDur) ? str?.replaceAll("%durationmin%", "${durationToMinutes(evt?.totalDur)} minute${durationToMinutes(evt?.totalDur) > 1 ? "s" : ""} ago") : str
     }
     str = (str?.contains("%date%")) ? str?.replaceAll("%date%", convToDate(evt?.date ?: new Date())) : str
     str = (str?.contains("%time%")) ? str?.replaceAll("%time%", convToTime(evt?.date ?: new Date())) : str
@@ -2845,12 +2848,12 @@ String decodeVariables(evt, str) {
 }
 
 def durationToMinutes(dur) {
-    if(dur && dur>=60) return (dur/60)?.round(0)
+    if(dur && dur>=60) return (dur/60)?.toInteger()
     return dur?.toInteger()
 }
 
 def durationToHours(dur) {
-    if(dur && dur>= (60*60)) return ((dur/60)/60)?.round(0)
+    if(dur && dur>= (60*60)) return (dur / 60 / 60)?.toInteger()
     return dur?.toInteger()
 }
 
@@ -3322,22 +3325,12 @@ Map weeksOfMonthMap() { return ["1":"1st Week", "2":"2nd Week", "3":"3rd Week", 
 Map monthMap() { return ["1":"January", "2":"February", "3":"March", "4":"April", "5":"May", "6":"June", "7":"July", "8":"August", "9":"September", "10":"October", "11":"November", "12":"December"] }
 
 Map getAlarmTrigOpts() {
-    if(isST()) { return ["away":"Armed Away","stay":"Armed Home","off":"Disarmed"] }
-    return ["armAway":"Armed Away","armHome":"Armed Home","disarm":"Disarmed", "alerts":"Alerts"]
+    return isST() ? ["away":"Armed Away","stay":"Armed Home","off":"Disarmed"] : ["armAway":"Armed Away","armHome":"Armed Home","disarm":"Disarmed", "alerts":"Alerts"]
 }
 
 def getShmIncidents() {
     def incidentThreshold = now() - 604800000
     return location.activeIncidents.collect{[date: it?.date?.time, title: it?.getTitle(), message: it?.getMessage(), args: it?.getMessageArgs(), sourceType: it?.getSourceType()]}.findAll{ it?.date >= incidentThreshold } ?: null
-}
-
-String getAlarmSystemStatus() {
-    if(isST()) {
-        def cur = location.currentState("alarmSystemStatus")?.value
-        def inc = getShmIncidents()
-        if(inc != null && inc?.size()) { cur = 'alarm_active' }
-        return cur ?: "disarmed"
-    } else { return location?.hsmStatus ?: "disarmed" }
 }
 
 public Map getActionMetrics() {
@@ -3534,7 +3527,7 @@ Boolean isInMode(modes, not=false) {
 }
 
 Boolean isInAlarmMode(modes) {
-    return (modes) ? (getAlarmSystemStatus() in modes) : false
+    return (modes) ? (parent?.getAlarmSystemStatus() in modes) : false
 }
 
 Boolean areAllDevsSame(List devs, String attr, val) {
@@ -3683,8 +3676,8 @@ def GetTimeDiffSeconds(lastDate, sender=null) {
 
 def getDateByFmt(String fmt, dt=null) {
     def df = new java.text.SimpleDateFormat(fmt)
-    df.setTimeZone(location?.timeZone)
-    return df.format(dt ?: new Date())
+    df?.setTimeZone(location?.timeZone)
+    return df?.format(dt ?: new Date())
 }
 
 Map getDateMap() {
@@ -3706,9 +3699,9 @@ Map getDateMap() {
 
 Boolean isDayOfWeek(opts) {
     def df = new java.text.SimpleDateFormat("EEEE")
-    df.setTimeZone(location?.timeZone)
-    def day = df.format(new Date())
-    return ( opts?.contains(day) )
+    df?.setTimeZone(location?.timeZone)
+    def day = df?.format(new Date())
+    return opts?.contains(day)
 }
 
 Boolean isMonthOfYear(opts) {
@@ -3845,9 +3838,9 @@ String getConditionsDesc() {
     String sPre = "cond_"
     if(confd) {
         String str = "Conditions: (${(conditionStatus()?.ok == true) ? "${okSym()}" : "${notOkSym()}"})\n"
-        str += settings?.cond_require_all ? " \u2022 Any Condition Allowed\n" : " \u2022 All Conditions Required\n"
+        str += reqAllCond() ?  " \u2022 All Conditions Required\n" : " \u2022 Any Condition Allowed\n"
         if(timeCondConfigured()) {
-            str += " • Time Between: (${timeCondOk() ? "${okSym()}" : "${notOkSym()}"})\n"
+            str += " • Time Between: (${(timeCondOk() == true) ? "${okSym()}" : "${notOkSym()}"})\n"
             str += "    - ${getTimeCondDesc(false)}\n"
         }
         if(dateCondConfigured()) {

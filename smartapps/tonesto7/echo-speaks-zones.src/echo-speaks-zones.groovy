@@ -14,8 +14,8 @@
  *
  */
 
-String appVersion()  { return "3.3.1.0" }
-String appModified() { return "2019-12-17" }
+String appVersion()  { return "3.3.2.0" }
+String appModified() { return "2020-01-07" }
 String appAuthor()	 { return "Anthony S." }
 Boolean isBeta()     { return false }
 Boolean isST()       { return (getPlatform() == "SmartThings") }
@@ -201,8 +201,8 @@ def conditionsPage() {
         Boolean multiConds = multipleConditions()
         if(multiConds) {
             section() {
-                input "cond_require_all", "bool", title: inTS("Require All Selected Conditions to Pass Before Activating Zone?", getAppImg("checkbox", true)), required: false, defaultValue: true, submitOnChange: true, image: getAppImg("checkbox")
-                paragraph pTS("Notice:\n${settings?.cond_require_all != false ? "All selected conditions must pass before this zone will be marked active." : "Any condition will make this zone active."}", null, false, "#2784D9"), state: "complete"
+                input "cond_require_all", "bool", title: inTS("Require All Selected Conditions to Pass Before Activating Zone?", getAppImg("checkbox", true)), required: false, defaultValue: false, submitOnChange: true, image: getAppImg("checkbox")
+                paragraph pTS("Notice:\n${cond_require_all == true ? "All selected conditions required to make zone active." : "Any condition will make this zone active."}", null, false, "#2784D9"), state: "complete"
             }
         }
         section(sTS("Time/Date")) {
@@ -555,6 +555,8 @@ String attributeConvert(String attr) {
 /***********************************************************************************************************
    CONDITIONS HANDLER
 ************************************************************************************************************/
+Boolean reqAllCond() { return (multipleConditions() && settings?.cond_require_all == true)}
+
 Boolean timeCondOk() {
     def startTime = null
     def stopTime = null
@@ -568,27 +570,30 @@ Boolean timeCondOk() {
         if(settings?.cond_time_stop_type == "sunset") { stopTime = sun?.sunset }
         else if(settings?.cond_time_stop_type == "sunrise") { stopTime = sun?.sunrise }
         else if(settings?.cond_time_stop_type == "time" && settings?.cond_time_stop) { stopTime = settings?.cond_time_stop }
-    } else { return true }
+    } else { return null }
     if(startTime && stopTime) {
         if(!isST()) {
             startTime = toDateTime(startTime)
             stopTime = toDateTime(stopTime)
         }
         return timeOfDayIsBetween(startTime, stopTime, new Date(), location?.timeZone)
-    } else { return true }
+    } else { return null }
 }
 
 Boolean dateCondOk() {
+    if(settings?.cond_days == null && settings?.cond_months == null) return null
     Boolean dOk = settings?.cond_days ? (isDayOfWeek(settings?.cond_days)) : true
     Boolean mOk = settings?.cond_months ? (isMonthOfYear(settings?.cond_months)) : true
-    return (dOk && mOk)
+    logDebug("dateConditions | monthOk: $mOk | daysOk: $dOk")
+    return reqAllCond() ? (mOk && dOk) : (mOk || dOk)
 }
 
 Boolean locationCondOk() {
+    if(settings?.cond_mode == null && settings?.cond_mode_cmd == null && settings?.cond_alarm == null) return null
     Boolean mOk = (settings?.cond_mode && settings?.cond_mode_cmd) ? (isInMode(settings?.cond_mode, (settings?.cond_mode_cmd == "not"))) : true
-    Boolean aOk = settings?.cond_alarm ? (isInAlarmMode(settings?.cond_alarm)) : true
-    logDebug("locationCondOk | modeOk: $mOk | alarmOk: $aOk")
-    return (mOk && aOk)
+    Boolean aOk = settings?.cond_alarm ? isInAlarmMode(settings?.cond_alarm) : true
+    logDebug("locationConditions | modeOk: $mOk | alarmOk: $aOk")
+    return reqAllCond() ? (mOk && aOk) : (mOk || aOk)
 }
 
 Boolean checkDeviceCondOk(type) {
@@ -641,39 +646,38 @@ Boolean checkDeviceNumCondOk(type) {
 }
 
 Boolean deviceCondOk() {
-    Boolean swDevOk = checkDeviceCondOk("switch")
-    Boolean motDevOk = checkDeviceCondOk("motion")
-    Boolean presDevOk = checkDeviceCondOk("presence")
-    Boolean conDevOk = checkDeviceCondOk("contact")
-    Boolean accDevOk = checkDeviceCondOk("acceleration")
-    Boolean lockDevOk = checkDeviceCondOk("lock")
-    Boolean garDevOk = checkDeviceCondOk("door")
-    Boolean shadeDevOk = checkDeviceCondOk("shade")
-    Boolean valveDevOk = checkDeviceCondOk("valve")
-    Boolean tempDevOk = checkDeviceNumCondOk("temperature")
-    Boolean humDevOk = checkDeviceNumCondOk("humidity")
-    Boolean illDevOk = checkDeviceNumCondOk("illuminance")
-    Boolean levelDevOk = checkDeviceNumCondOk("level")
-    Boolean powerDevOk = checkDeviceNumCondOk("illuminance")
-    Boolean battDevOk = checkDeviceNumCondOk("battery")
-    logDebug("checkDeviceCondOk | switchOk: $swDevOk | motionOk: $motDevOk | presenceOk: $presDevOk | contactOk: $conDevOk | accelerationOk: $accDevOk | lockOk: $lockDevOk | garageOk: $garDevOk")
-    if(settings?.cond_require_all == false) {
-        return (swDevOk || motDevOk || presDevOk || conDevOk || accDevOk || lockDevOk || garDevOk || valveDevOk || shadeDevOk || tempDevOk || humDevOk || battDevOk || illDevOk || levelDevOk || powerDevOk)
-    } else {
-        return (swDevOk && motDevOk && presDevOk && conDevOk && accDevOk && lockDevOk && garDevOk && valveDevOk && shadeDevOk && tempDevOk && humDevOk && battDevOk && illDevOk && levelDevOk && powerDevOk)
+    List skipped = []
+    List passed = []
+    List failed = []
+    ["switch", "motion", "presence", "contact", "acceleration", "lock", "door", "shade", "valve"]?.each { i->
+        if(!settings?."cond_${i}") { skipped?.push(i); return; }
+        checkDeviceCondOk(i) ? passed?.push(i) : failed?.push(i);
     }
+    ["temperature", "humidity", "illuminance", "level", "power", "battery"]?.each { i->
+        if(!settings?."cond_${i}") { skipped?.push(i); return; }
+        checkDeviceNumCondOk(i) ? passed?.push(i) : failed?.push(i);
+    }
+    logDebug("DeviceCondOk | Found: (${(passed?.size() + failed?.size())}) | Skipped: $skipped | Passed: $passed | Failed: $failed")
+    Integer cndSize = (passed?.size() + failed?.size())
+    if(cndSize == 0) return null
+    return reqAllCond() ? (cndSize == passed?.size()) : (cndSize > 0 && passed?.size() >= 1)
 }
 
 def conditionStatus() {
-    Boolean reqAll = (settings?.cond_require_all != false)
-    List blocks = []
-    List ok = []
-    if(!timeCondOk())        { blocks?.push("time") } else { ok?.push("time") }
-    if(!dateCondOk())        { blocks?.push("date") } else { ok?.push("date") }
-    if(!locationCondOk())    { blocks?.push("location") } else { ok?.push("location") }
-    if(!deviceCondOk())      { blocks?.push("device") } else { ok?.push("device") }
-    logDebug("ConditionsStatus | RequireAll: ${reqAll} | Blocks: ${blocks}")
-    return [ok: (!reqAll ? (ok?.size() >= 1) : (blocks?.size() == 0)), passed: ok, blocks: blocks]
+    Boolean reqAll = reqAllCond()
+    List failed = []
+    List passed = []
+    List skipped = []
+    ["time", "date", "location", "device"]?.each { i->
+        def s = "${i}CondOk"()
+        if(s == null) { skipped?.push(i); return; }
+        s ? passed?.push(i) : failed?.push(i);
+    }
+    Integer cndSize = (passed?.size() + failed?.size())
+    logDebug("ConditionsStatus | RequireAll: ${reqAll} | Found: (${cndSize}) | Skipped: $skipped | Passed: $passed | Failed: $failed")
+    Boolean ok = reqAll ? (cndSize == passed?.size()) : (cndSize > 0 && passed?.size() >= 1)
+    if(cndSize == 0) ok = true;
+    return [ok: ok, passed: passed, blocks: failed]
 }
 
 Boolean devCondConfigured(type) {
@@ -750,12 +754,14 @@ private addToZoneHistory(evt, condStatus, Integer max=10) {
 def checkZoneStatus(evtName) {
     Map condStatus = conditionStatus()
     Boolean active = (condStatus?.ok == true)
-    Integer delay = null
-    if(active) { delay = settings?.zone_active_delay ?: null }
-    else { delay = settings?.zone_inactive_delay ?: null }
+    String delayType = active ? "active" : "inactive"
+    Map data = [active: active, recheck: false, evtName: evtName, condStatus: condStatus]
+    Integer delay = (settings?."zone_${delayType}_delay" && !settings?."zone_${delayType}_delay" instanceof String) ? settings?."zone_${delayType}_delay" : null
     if(delay) {
-        runIn(delay as Integer, "updateZoneStatus", [data: [active: active, recheck: true, evtName: evtName, condStatus: condStatus]])
-    } else { updateZoneStatus([active: active, recheck: false, evtName: evtName, condStatus: condStatus]) }
+        runIn(delay, "updateZoneStatus", [data: data])
+    } else {
+        updateZoneStatus(data)
+    }
 }
 
 def sendZoneStatus() {
@@ -773,7 +779,8 @@ def updateZoneStatus(data) {
     Map condStatus = data?.condStatus ?: null
     if(data?.recheck == true) {
         condStatus = conditionStatus()
-        active = (condStatus?.ok == true) }
+        active = (condStatus?.ok == true)
+    }
     if(state?.zoneConditionsOk != active) {
         log.debug("Updating Zone Status to (${active ? "Active" : "Inactive"})... ${getZoneName()}")
         state?.zoneConditionsOk = active
@@ -966,7 +973,7 @@ Boolean isInMode(modes, not=false) {
 }
 
 Boolean isInAlarmMode(modes) {
-    return (modes) ? (getAlarmSystemStatus() in modes) : false
+    return (modes) ? (parent?.getAlarmSystemStatus() in modes) : false
 }
 
 Boolean areAllDevsSame(List devs, String attr, val) {
@@ -1298,7 +1305,7 @@ String getConditionsDesc() {
     String sPre = "cond_"
     if(confd) {
         String str = "Conditions: (${(conditionStatus()?.ok == true) ? "${okSym()}" : "${notOkSym()}"})\n"
-        str += settings?.cond_require_all ? " \u2022 Any Condition Allowed\n" : " \u2022 All Conditions Required\n"
+        str += (settings?.cond_require_all == false) ? " \u2022 Any Condition Allowed\n" : " \u2022 All Conditions Required\n"
         if(timeCondConfigured()) {
             str += " \u2022 Time Between: (${timeCondOk() ? "${okSym()}" : "${notOkSym()}"})\n"
             str += "    - ${getTimeCondDesc(false)}\n"
@@ -1427,8 +1434,7 @@ List monthEnum() {
 }
 
 Map getAlarmTrigOpts() {
-    if(isST()) { return ["away":"Armed Away","stay":"Armed Home","off":"Disarmed"] }
-    return ["armAway":"Armed Away","armHome":"Armed Home","disarm":"Disarmed", "alerts":"Alerts"]
+    return isST() ? ["away":"Armed Away","stay":"Armed Home","off":"Disarmed"] : ["armAway":"Armed Away","armHome":"Armed Home","disarm":"Disarmed", "alerts":"Alerts"]
 }
 
 def getShmIncidents() {
@@ -1436,14 +1442,6 @@ def getShmIncidents() {
     return location.activeIncidents.collect{[date: it?.date?.time, title: it?.getTitle(), message: it?.getMessage(), args: it?.getMessageArgs(), sourceType: it?.getSourceType()]}.findAll{ it?.date >= incidentThreshold } ?: null
 }
 
-String getAlarmSystemStatus() {
-    if(isST()) {
-        def cur = location.currentState("alarmSystemStatus")?.value
-        def inc = getShmIncidents()
-        if(inc != null && inc?.size()) { cur = 'alarm_active' }
-        return cur ?: "disarmed"
-    } else { return location?.hsmStatus ?: "disarmed" }
-}
 Boolean pushStatus() { return (settings?.notif_sms_numbers?.toString()?.length()>=10 || settings?.notif_send_push || settings?.notif_pushover) ? ((settings?.notif_send_push || (settings?.notif_pushover && settings?.notif_pushover_devices)) ? "Push Enabled" : "Enabled") : null }
 Integer getLastNotifMsgSec() { return !state?.lastNotifMsgDt ? 100000 : GetTimeDiffSeconds(state?.lastNotifMsgDt, "getLastMsgSec").toInteger() }
 Integer getLastChildInitRefreshSec() { return !state?.lastChildInitRefreshDt ? 3600 : GetTimeDiffSeconds(state?.lastChildInitRefreshDt, "getLastChildInitRefreshSec").toInteger() }
